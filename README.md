@@ -2,7 +2,7 @@
 
 **Share files. No internet. No uploads.**
 
-Droply is an offline-first Progressive Web App (PWA) built with Next.js (App Router), TypeScript, Tailwind CSS, and native WebRTC DataChannels. It transfers files directly between devices over a shared Wi-Fi network or mobile hotspot using two-way QR code signaling — with zero cloud uploads, zero accounts, and zero external signaling servers.
+LetsShare is an offline-first Progressive Web App (PWA) built with Next.js (App Router), TypeScript, Tailwind CSS, and native WebRTC DataChannels. It transfers files directly between devices over a shared Wi-Fi network or mobile hotspot using two-way QR code signaling — with zero cloud uploads, zero accounts, and zero external signaling servers.
 
 ---
 
