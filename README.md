@@ -1,4 +1,4 @@
-# Droply – Offline QR-Based Peer-to-Peer File Sharing PWA
+# LetsShare – Offline QR-Based Peer-to-Peer File Sharing PWA
 
 **Share files. No internet. No uploads.**
 
