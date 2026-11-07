@@ -6,14 +6,10 @@ import {
   CameraOff,
   Image as ImageIcon,
   ClipboardPaste,
-  RefreshCw,
   AlertCircle,
-  CheckCircle2,
 } from "lucide-react";
 import { CompactSDP } from "@/lib/types";
 import { useQRScanner } from "@/hooks/useQRScanner";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 
 interface QRScannerProps {
@@ -30,7 +26,7 @@ export function QRScanner({
   onScanComplete,
 }: QRScannerProps) {
   const reactId = useId().replace(/:/g, "");
-  const readerElementId = `droply-qr-reader-${reactId}`;
+  const readerElementId = `letsshare-qr-reader-${reactId}`;
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [manualCode, setManualCode] = useState("");
   const [showManualInput, setShowManualInput] = useState(false);
@@ -71,59 +67,26 @@ export function QRScanner({
       : 0;
 
   return (
-    <div className="flex flex-col rounded-2xl border border-border/80 bg-card p-5 shadow-xs">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <h3 className="text-base font-semibold text-foreground">{title}</h3>
-          <p className="text-xs text-muted-foreground">{subtitle}</p>
-        </div>
+    <div className="flex flex-col items-center rounded-2xl border border-border bg-card p-5 text-center">
+      <h3 className="text-base font-bold text-foreground">{title}</h3>
+      <p className="mt-0.5 text-xs text-muted-foreground">{subtitle}</p>
 
-        <Badge variant="outline">
-          {expectedType === "O" ? "Expecting Offer QR" : "Expecting Answer QR"}
-        </Badge>
-      </div>
-
-      {/* Camera Viewport Container */}
-      <div className="relative mt-4 flex min-h-72 flex-col items-center justify-center overflow-hidden rounded-2xl border border-border bg-zinc-950 text-zinc-100">
-        <div
-          id={readerElementId}
-          className="w-full max-w-sm overflow-hidden rounded-xl"
-        />
+      <div className="relative mt-4 flex min-h-60 w-full flex-col items-center justify-center overflow-hidden rounded-xl border border-border bg-neutral-950 text-white">
+        <div id={readerElementId} className="w-full overflow-hidden" />
 
         {!isScanning && (
           <div className="flex flex-col items-center justify-center p-6 text-center">
-            <div className="flex size-14 items-center justify-center rounded-2xl bg-teal-500/15 text-teal-400">
-              <Camera className="size-7" />
-            </div>
-            <h4 className="mt-3 text-sm font-semibold text-white">
-              Camera QR Scanner
-            </h4>
-            <p className="mt-1 max-w-xs text-xs text-zinc-400">
-              Grant camera access to scan the{" "}
-              {expectedType === "O"
-                ? "Sender's Offer QR code"
-                : "Receiver's Answer QR code"}{" "}
-              directly from the other device&apos;s screen.
+            <button
+              type="button"
+              onClick={() => void startScanner(readerElementId)}
+              className="inline-flex h-11 items-center gap-2 rounded-xl bg-primary px-5 text-sm font-bold text-primary-foreground hover:opacity-95"
+            >
+              <Camera className="size-4" />
+              Open Camera
+            </button>
+            <p className="mt-2.5 text-xs text-neutral-400">
+              Tap to scan the QR code on the other device
             </p>
-            <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
-              <Button
-                type="button"
-                onClick={() => void startScanner(readerElementId)}
-                className="bg-teal-600 text-white hover:bg-teal-500"
-              >
-                <Camera className="size-4" />
-                Start Camera Scan
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => fileInputRef.current?.click()}
-                className="border-zinc-700 bg-zinc-900 text-zinc-200 hover:bg-zinc-800"
-              >
-                <ImageIcon className="size-4" />
-                Scan QR Image
-              </Button>
-            </div>
           </div>
         )}
       </div>
@@ -136,124 +99,88 @@ export function QRScanner({
         className="hidden"
       />
 
-      {/* Camera Controls when active */}
       {isScanning && (
-        <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            {cameras.length > 1 && (
-              <select
-                value={selectedCameraId}
-                onChange={(e) => handleCameraChange(e.target.value)}
-                aria-label="Select camera device"
-                className="h-8 rounded-lg border border-border bg-background px-2.5 text-xs text-foreground"
-              >
-                {cameras.map((cam) => (
-                  <option key={cam.id} value={cam.id}>
-                    {cam.label}
-                  </option>
-                ))}
-              </select>
-            )}
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => void startScanner(readerElementId, selectedCameraId)}
+        <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+          {cameras.length > 1 && (
+            <select
+              value={selectedCameraId}
+              onChange={(e) => handleCameraChange(e.target.value)}
+              aria-label="Select camera"
+              className="h-8 rounded-lg border border-border bg-background px-2.5 text-xs text-foreground"
             >
-              <RefreshCw className="size-3.5" />
-              Restart
-            </Button>
-          </div>
+              {cameras.map((cam) => (
+                <option key={cam.id} value={cam.id}>
+                  {cam.label}
+                </option>
+              ))}
+            </select>
+          )}
 
-          <Button
+          <button
             type="button"
-            variant="destructive"
-            size="sm"
             onClick={() => void stopScanner()}
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-secondary px-3 text-xs font-semibold text-foreground"
           >
             <CameraOff className="size-3.5" />
             Stop Camera
-          </Button>
+          </button>
         </div>
       )}
 
-      {/* Multi-frame QR progress bar */}
       {frameProgress.total > 1 && (
-        <div className="mt-3 rounded-xl border border-teal-500/30 bg-teal-500/10 p-3">
-          <div className="flex items-center justify-between text-xs font-medium text-teal-700 dark:text-teal-300">
-            <span className="flex items-center gap-1.5">
-              <CheckCircle2 className="size-3.5" />
-              Scanning Multi-Frame QR Sequence...
-            </span>
-            <span>
-              {frameProgress.received} / {frameProgress.total} frames captured (
-              {progressPercentage}%)
-            </span>
+        <div className="mt-3 w-full rounded-xl border border-border bg-background p-3 text-left">
+          <div className="flex items-center justify-between text-xs font-bold text-foreground">
+            <span>Scanning QR...</span>
+            <span>{progressPercentage}%</span>
           </div>
-          <Progress value={progressPercentage} className="mt-2 h-2" />
-          <p className="mt-1 text-[11px] text-muted-foreground">
-            Keep holding the camera steady while the animated QR frames cycle.
-          </p>
+          <Progress value={progressPercentage} className="mt-1.5" />
         </div>
       )}
 
       {scanError && (
-        <div className="mt-3 flex items-start gap-2 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-700 dark:text-red-300">
+        <div className="mt-3 flex w-full items-start gap-2 rounded-xl border border-destructive/40 bg-destructive/10 p-3 text-left text-xs text-destructive">
           <AlertCircle className="mt-0.5 size-4 shrink-0" />
           <span>{scanError}</span>
         </div>
       )}
 
-      {/* Offline Manual / Image Fallback Bar */}
-      <div className="mt-4 border-t border-border/60 pt-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <span className="text-xs text-muted-foreground">
-            No camera or testing on the same computer?
-          </span>
-          <div className="flex items-center gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              size="xs"
-              onClick={() => fileInputRef.current?.click()}
-            >
-              <ImageIcon className="size-3" />
-              Upload QR PNG
-            </Button>
-            <Button
-              type="button"
-              variant="secondary"
-              size="xs"
-              onClick={() => setShowManualInput(!showManualInput)}
-            >
-              <ClipboardPaste className="size-3" />
-              {showManualInput ? "Hide Code Input" : "Paste Pairing Code"}
-            </Button>
-          </div>
-        </div>
-
-        {showManualInput && (
-          <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-            <input
-              type="text"
-              value={manualCode}
-              onChange={(e) => setManualCode(e.target.value)}
-              placeholder={`Paste Droply ${
-                expectedType === "O" ? "Offer (DP1|...|O|...)" : "Answer (DP1|...|A|...)"
-              } code here...`}
-              className="flex-1 rounded-xl border border-input bg-background px-3 py-2 font-mono text-xs text-foreground outline-none focus:border-teal-500"
-            />
-            <Button
-              type="button"
-              size="sm"
-              onClick={() => submitManualCode(manualCode)}
-            >
-              Apply Code
-            </Button>
-          </div>
-        )}
+      <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+        <button
+          type="button"
+          onClick={() => fileInputRef.current?.click()}
+          className="inline-flex h-7 items-center gap-1 rounded-lg border border-border bg-background px-2.5 text-xs font-semibold text-foreground hover:bg-secondary"
+        >
+          <ImageIcon className="size-3.5" />
+          Upload QR Image
+        </button>
+        <button
+          type="button"
+          onClick={() => setShowManualInput(!showManualInput)}
+          className="inline-flex h-7 items-center gap-1 rounded-lg px-2.5 text-xs font-medium text-muted-foreground hover:text-foreground"
+        >
+          <ClipboardPaste className="size-3.5" />
+          {showManualInput ? "Hide Code" : "Paste Code"}
+        </button>
       </div>
+
+      {showManualInput && (
+        <div className="mt-3 flex w-full gap-2">
+          <input
+            type="text"
+            value={manualCode}
+            onChange={(e) => setManualCode(e.target.value)}
+            placeholder="Paste code from the other device..."
+            className="flex-1 rounded-lg border border-input bg-background px-3 py-1.5 text-xs text-foreground outline-none focus:border-primary"
+          />
+          <button
+            type="button"
+            onClick={() => submitManualCode(manualCode)}
+            className="rounded-lg bg-foreground px-3.5 py-1.5 text-xs font-bold text-background"
+          >
+            Connect
+          </button>
+        </div>
+      )}
     </div>
   );
 }
-

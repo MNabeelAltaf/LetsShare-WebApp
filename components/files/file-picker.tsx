@@ -2,7 +2,6 @@
 
 import React, { useRef, useState } from "react";
 import {
-  UploadCloud,
   FileText,
   FileImage,
   FileVideo,
@@ -11,13 +10,10 @@ import {
   FileCode,
   File as FileIcon,
   X,
-  Trash2,
   Plus,
 } from "lucide-react";
 import { SelectedFileItem } from "@/lib/types";
 import { formatBytes, getFileCategory } from "@/lib/file/format";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
 interface FilePickerProps {
@@ -39,25 +35,25 @@ export function FileCategoryIcon({
   className?: string;
 }) {
   const category = getFileCategory(mimeType, fileName);
-  const baseClass = cn("size-5 shrink-0", className);
+  const baseClass = cn("size-4 shrink-0 text-primary", className);
 
   switch (category) {
     case "image":
-      return <FileImage className={cn(baseClass, "text-pink-500")} />;
+      return <FileImage className={baseClass} />;
     case "video":
-      return <FileVideo className={cn(baseClass, "text-purple-500")} />;
+      return <FileVideo className={baseClass} />;
     case "audio":
-      return <FileAudio className={cn(baseClass, "text-amber-500")} />;
+      return <FileAudio className={baseClass} />;
     case "pdf":
-      return <FileText className={cn(baseClass, "text-red-500")} />;
+      return <FileText className={baseClass} />;
     case "archive":
-      return <FileArchive className={cn(baseClass, "text-orange-500")} />;
+      return <FileArchive className={baseClass} />;
     case "document":
-      return <FileText className={cn(baseClass, "text-blue-500")} />;
+      return <FileText className={baseClass} />;
     case "code":
-      return <FileCode className={cn(baseClass, "text-emerald-500")} />;
+      return <FileCode className={baseClass} />;
     default:
-      return <FileIcon className={cn(baseClass, "text-teal-500")} />;
+      return <FileIcon className={baseClass} />;
   }
 }
 
@@ -117,10 +113,10 @@ export function FilePicker({
           }
         }}
         className={cn(
-          "group relative flex cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed p-8 text-center transition-all",
+          "flex cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed bg-card px-6 py-10 text-center transition-colors",
           isDragging
-            ? "border-teal-500 bg-teal-500/10 scale-[1.005]"
-            : "border-border hover:border-teal-500/60 hover:bg-muted/40",
+            ? "border-primary bg-primary/5"
+            : "border-border hover:border-foreground/40",
           disabled && "pointer-events-none opacity-60"
         )}
       >
@@ -133,100 +129,76 @@ export function FilePicker({
           disabled={disabled}
         />
 
-        <div className="flex size-14 items-center justify-center rounded-2xl bg-teal-500/10 text-teal-600 transition-transform group-hover:scale-105 dark:text-teal-400">
-          <UploadCloud className="size-7" />
-        </div>
+        <span className="inline-flex h-10 items-center gap-1.5 rounded-xl bg-foreground px-4 text-xs font-bold text-background">
+          <Plus className="size-4" />
+          Choose Files
+        </span>
 
-        <h4 className="mt-3 text-base font-semibold text-foreground">
-          Drag & drop files here, or click to browse
-        </h4>
-        <p className="mt-1 max-w-md text-xs text-muted-foreground">
-          Supports images, videos, audio, PDFs, documents, ZIP archives, and
-          large files (streamed in 64 KB chunks without loading the full file
-          into memory).
+        <p className="mt-3 text-xs text-muted-foreground">
+          Tap to pick photos, videos, or documents
         </p>
-
-        <div className="mt-4 flex flex-wrap items-center justify-center gap-1.5">
-          {["Images", "Videos", "Audio", "PDFs", "Documents", "ZIP Archives"].map(
-            (label) => (
-              <Badge key={label} variant="secondary" className="text-[11px]">
-                {label}
-              </Badge>
-            )
-          )}
-        </div>
       </div>
 
       {files.length > 0 && (
-        <div className="rounded-2xl border border-border/80 bg-card p-4 shadow-2xs">
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 pb-3">
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-semibold text-foreground">
-                Selected Files ({files.length})
-              </span>
-              <Badge variant="default">{formatBytes(totalBytes)} Total</Badge>
-            </div>
-            <div className="flex items-center gap-2">
-              <Button
+        <div className="rounded-2xl border border-border bg-card">
+          <div className="flex items-center justify-between border-b border-border px-4 py-3">
+            <span className="text-xs font-bold text-foreground">
+              {files.length} {files.length === 1 ? "file" : "files"} •{" "}
+              {formatBytes(totalBytes)}
+            </span>
+            <div className="flex items-center gap-3">
+              <button
                 type="button"
-                variant="outline"
-                size="xs"
                 disabled={disabled}
                 onClick={() => inputRef.current?.click()}
+                className="text-xs font-bold text-primary hover:underline"
               >
-                <Plus className="size-3" />
-                Add More
-              </Button>
-              <Button
+                + Add
+              </button>
+              <button
                 type="button"
-                variant="ghost"
-                size="xs"
                 disabled={disabled}
                 onClick={onClearAll}
-                className="text-muted-foreground hover:text-destructive"
+                className="text-xs font-medium text-muted-foreground hover:text-destructive"
               >
-                <Trash2 className="size-3" />
-                Clear All
-              </Button>
+                Clear
+              </button>
             </div>
           </div>
 
-          <ul className="mt-3 max-h-72 space-y-2 overflow-y-auto pr-1">
+          <ul className="divide-y divide-border max-h-60 overflow-y-auto">
             {files.map((item) => (
               <li
                 key={item.id}
-                className="flex items-center justify-between gap-3 rounded-xl border border-border/50 bg-muted/25 px-3 py-2.5 transition-colors hover:bg-muted/45"
+                className="flex items-center justify-between gap-3 px-4 py-2.5"
               >
-                <div className="flex min-w-0 items-center gap-3">
+                <div className="flex min-w-0 flex-1 items-center gap-2.5">
                   <FileCategoryIcon
                     mimeType={item.type}
                     fileName={item.name}
                   />
-                  <div className="min-w-0">
+                  <div className="min-w-0 flex-1">
                     <p
-                      className="truncate text-sm font-medium text-foreground"
+                      className="truncate text-xs font-semibold text-foreground"
                       title={item.name}
                     >
                       {item.name}
                     </p>
-                    <p className="text-xs text-muted-foreground">
-                      {formatBytes(item.size)} •{" "}
-                      {Math.max(1, Math.ceil(item.size / (64 * 1024)))} chunks
+                    <p className="text-[11px] text-muted-foreground">
+                      {formatBytes(item.size)}
                     </p>
                   </div>
                 </div>
 
                 {!disabled && (
-                  <Button
+                  <button
                     type="button"
-                    variant="ghost"
-                    size="icon-xs"
                     onClick={() => onRemoveFile(item.id)}
                     aria-label={`Remove ${item.name}`}
-                    className="text-muted-foreground hover:text-destructive"
+                    className="rounded-md p-1 text-muted-foreground hover:bg-secondary hover:text-destructive"
                   >
                     <X className="size-3.5" />
-                  </Button>
+                  </button>
                 )}
               </li>
             ))}
@@ -236,4 +208,3 @@ export function FilePicker({
     </div>
   );
 }
-

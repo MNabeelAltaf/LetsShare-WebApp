@@ -1,14 +1,14 @@
 {
   "id": "/",
-  "name": "Droply – Offline QR P2P File Sharing",
-  "short_name": "Droply",
-  "description": "Share files directly between devices via QR codes and WebRTC. No internet. No cloud uploads.",
+  "name": "LetsShare – Offline File Sharing",
+  "short_name": "LetsShare",
+  "description": "Direct device-to-device file transfer over Wi-Fi or Hotspot via QR code.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
   "orientation": "portrait-primary",
-  "background_color": "#09090b",
-  "theme_color": "#0d9488",
+  "background_color": "#f5f3ef",
+  "theme_color": "#181816",
   "categories": ["utilities", "productivity"],
   "icons": [
     {
@@ -37,4 +37,3 @@
     }
   ]
 }
-

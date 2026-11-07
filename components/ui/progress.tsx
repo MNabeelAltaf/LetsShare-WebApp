@@ -20,14 +20,14 @@ function Progress({
       aria-valuemax={100}
       aria-valuenow={clamped}
       className={cn(
-        "relative h-2.5 w-full overflow-hidden rounded-full bg-secondary",
+        "relative h-2 w-full overflow-hidden rounded-full bg-secondary",
         className
       )}
       {...props}
     >
       <div
         className={cn(
-          "h-full bg-teal-600 dark:bg-teal-500 transition-all duration-200 ease-out",
+          "h-full bg-primary transition-all duration-200 ease-out",
           indicatorClassName
         )}
         style={{ width: `${clamped}%` }}
@@ -37,4 +37,3 @@ function Progress({
 }
 
 export { Progress };
-

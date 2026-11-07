@@ -120,7 +120,7 @@ export function useNetworkStatus() {
     if (typeof window === "undefined" || !("caches" in window)) return false;
     setIsPrecaching(true);
     try {
-      const cache = await window.caches.open("droply-v1.2-shell");
+      const cache = await window.caches.open("letsshare-v4.0-shell");
       await Promise.allSettled(
         CORE_OFFLINE_URLS.map(async (url) => {
           const res = await fetch(url, { cache: "no-cache" });

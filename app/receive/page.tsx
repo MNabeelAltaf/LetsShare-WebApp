@@ -1,22 +1,11 @@
 "use client";
 
 import React from "react";
-import Link from "next/link";
-import {
-  XCircle,
-  CheckCircle2,
-  Loader2,
-  ArrowRight,
-  FileStack,
-} from "lucide-react";
+import { X, Check, Loader2 } from "lucide-react";
 import { useDroplySession } from "@/hooks/useDroplySession";
-import { NetworkStatusBar } from "@/components/network/network-status-bar";
 import { QRScanner } from "@/components/qr/qr-scanner";
 import { QRDisplay } from "@/components/qr/qr-display";
 import { TransferPanel } from "@/components/transfer/transfer-panel";
-import { formatBytes } from "@/lib/file/format";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
 export default function ReceivePage() {
@@ -25,7 +14,6 @@ export default function ReceivePage() {
     connectionState,
     dataChannelState,
     peerDeviceName,
-    offerPreview,
     qrFrames,
     compactCode,
     forceMultiFrame,
@@ -39,6 +27,7 @@ export default function ReceivePage() {
     rejectIncomingTransfer,
     controlFile,
     terminateEntireSession,
+    error,
   } = useDroplySession();
 
   const isAnswerReady =
@@ -52,54 +41,31 @@ export default function ReceivePage() {
   const currentStep = isConnected ? 3 : isAnswerReady ? 2 : 1;
 
   return (
-    <div className="space-y-6">
-      {/* Page Header */}
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2">
-            <Badge variant="default">Receiver Mode</Badge>
-            <span className="text-xs text-muted-foreground">
-              Direct P2P WebRTC File Receiver
-            </span>
-          </div>
-          <h1 className="mt-1 text-2xl font-bold tracking-tight text-foreground sm:text-3xl">
-            Receive Files via QR Pairing
-          </h1>
-        </div>
+    <div className="space-y-5">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <h1 className="text-xl font-extrabold tracking-tight text-foreground">
+          Receive Files
+        </h1>
 
         {(isAnswerReady || isConnected) && (
-          <Button
+          <button
             type="button"
-            variant="destructive"
-            size="sm"
             onClick={terminateEntireSession}
+            className="inline-flex items-center gap-1 rounded-lg border border-border bg-card px-2.5 py-1.5 text-xs font-semibold text-muted-foreground hover:text-foreground"
           >
-            <XCircle className="size-4" />
-            Cancel Session
-          </Button>
+            <X className="size-3.5" />
+            Cancel
+          </button>
         )}
       </div>
 
-      <NetworkStatusBar compact />
-
-      {/* 3-Step Progress Stepper */}
-      <div className="grid grid-cols-3 gap-2 rounded-2xl border border-border/80 bg-card p-3">
+      {/* Clean Non-Truncating 3-Step Tab Strip */}
+      <div className="grid grid-cols-3 overflow-hidden rounded-xl border border-border bg-card text-center">
         {[
-          {
-            step: 1,
-            title: "1. Scan Offer QR",
-            desc: "Scan sender's QR code",
-          },
-          {
-            step: 2,
-            title: "2. Show Answer QR",
-            desc: "Let sender scan response",
-          },
-          {
-            step: 3,
-            title: "3. Accept & Save",
-            desc: "Verify SHA-256 & download",
-          },
+          { step: 1, label: "1. Scan" },
+          { step: 2, label: "2. Reply" },
+          { step: 3, label: "3. Save" },
         ].map((item) => {
           const active = currentStep === item.step;
           const done = currentStep > item.step;
@@ -107,102 +73,65 @@ export default function ReceivePage() {
             <div
               key={item.step}
               className={cn(
-                "flex items-center gap-2.5 rounded-xl px-3 py-2 transition-colors",
+                "flex items-center justify-center gap-1.5 border-r border-border py-2.5 last:border-r-0 text-xs font-bold whitespace-nowrap",
                 active
-                  ? "bg-teal-500/10 text-teal-700 dark:text-teal-300 border border-teal-500/30"
+                  ? "bg-foreground text-background"
                   : done
-                  ? "text-emerald-600 dark:text-emerald-400"
+                  ? "bg-secondary text-foreground"
                   : "text-muted-foreground"
               )}
             >
-              <div
-                className={cn(
-                  "flex size-6 shrink-0 items-center justify-center rounded-full text-xs font-bold",
-                  active
-                    ? "bg-teal-600 text-white dark:bg-teal-400 dark:text-zinc-950"
-                    : done
-                    ? "bg-emerald-500/20 text-emerald-500"
-                    : "bg-muted text-muted-foreground"
-                )}
-              >
-                {done ? <CheckCircle2 className="size-4" /> : item.step}
-              </div>
-              <div className="min-w-0">
-                <p className="truncate text-xs font-semibold">{item.title}</p>
-                <p className="hidden truncate text-[11px] opacity-80 sm:block">
-                  {item.desc}
-                </p>
-              </div>
+              {done && <Check className="size-3.5 text-primary" />}
+              <span>{item.label}</span>
             </div>
           );
         })}
       </div>
 
-      {/* STEP 1: Scan Sender's Offer QR */}
-      {!isAnswerReady && !isConnected && (
-        <div className="mx-auto max-w-2xl space-y-4">
-          <QRScanner
-            expectedType="O"
-            title="Step 1: Scan Sender's Offer QR Code"
-            subtitle="Point your camera at the QR code displayed on the sending device"
-            onScanComplete={(offerPayload) => {
-              void handleOfferScannedByReceiver(offerPayload);
-            }}
-          />
+      {error && (
+        <div className="rounded-xl border border-destructive/40 bg-destructive/10 p-3 text-xs font-medium text-destructive">
+          {error}
         </div>
       )}
 
-      {/* STEP 2: Display Receiver Answer QR for Sender to Scan */}
-      {isAnswerReady && !isConnected && (
-        <div className="mx-auto max-w-2xl space-y-5">
-          {offerPreview && (
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-teal-500/30 bg-teal-500/10 p-4">
-              <div className="flex items-center gap-3">
-                <FileStack className="size-5 text-teal-500" />
-                <div>
-                  <p className="text-sm font-semibold text-foreground">
-                    Pairing with {peerDeviceName}
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    Incoming session: {offerPreview.fileCount}{" "}
-                    {offerPreview.fileCount === 1 ? "file" : "files"} •{" "}
-                    {formatBytes(offerPreview.totalBytes)} total
-                  </p>
-                </div>
-              </div>
-              <Badge variant="default">Offer Decoded</Badge>
-            </div>
-          )}
+      {/* STEP 1: Scan Sender's QR Code */}
+      {!isAnswerReady && !isConnected && (
+        <QRScanner
+          expectedType="O"
+          title="1. Scan Sender's QR Code"
+          subtitle="Point your camera at the QR code shown on the sending device"
+          onScanComplete={(offerPayload) => {
+            void handleOfferScannedByReceiver(offerPayload);
+          }}
+        />
+      )}
 
+      {/* STEP 2: Show Reply QR to Sender */}
+      {isAnswerReady && !isConnected && (
+        <div className="space-y-3">
           <QRDisplay
             frames={qrFrames}
             compactCode={compactCode}
-            title="Step 2: Show Answer QR to Sender"
-            subtitle="Ask the sender to scan this response QR code to complete the P2P link"
+            title="2. Show this Reply QR to Sender"
+            subtitle="Ask the sender to tap 'Next: Scan Reply QR' and scan this code"
             forceMultiFrame={forceMultiFrame}
             onToggleMultiFrame={setForceMultiFrame}
           />
 
-          <div className="flex items-center justify-center gap-2.5 rounded-2xl border border-border/80 bg-card p-4 text-xs text-muted-foreground">
-            <Loader2 className="size-4 animate-spin text-teal-500" />
-            <span>
-              Waiting for {peerDeviceName} to scan this Answer QR and open the
-              direct WebRTC DataChannel...
-            </span>
+          <div className="flex items-center justify-center gap-2 rounded-xl border border-border bg-card p-3.5 text-xs font-medium text-muted-foreground">
+            <Loader2 className="size-4 animate-spin text-primary" />
+            <span>Waiting for sender to scan this QR...</span>
           </div>
         </div>
       )}
 
-      {/* STEP 3: Connected -> Inspect Manifest, Accept/Reject, Receive & Download */}
+      {/* STEP 3: Accept & Save Files */}
       {isConnected && (
-        <div className="space-y-6">
+        <div className="space-y-4">
           {!incomingManifest && progressList.length === 0 && (
-            <div className="flex items-center justify-center gap-3 rounded-2xl border border-teal-500/30 bg-teal-500/10 p-6 text-sm font-medium text-teal-700 dark:text-teal-300">
-              <Loader2 className="size-5 animate-spin" />
-              <span>
-                Connected to {peerDeviceName}! Waiting for incoming file
-                manifest and SHA-256 metadata...
-              </span>
+            <div className="flex items-center justify-center gap-2 rounded-2xl border border-border bg-card p-6 text-xs font-bold text-foreground">
+              <Loader2 className="size-4 animate-spin text-primary" />
+              <span>Connected! Loading files...</span>
             </div>
           )}
 
@@ -218,21 +147,8 @@ export default function ReceivePage() {
             onControlFile={controlFile}
             onStartNewSession={terminateEntireSession}
           />
-
-          {sessionCompleted && (
-            <div className="flex justify-end">
-              <Link
-                href="/transfer"
-                className="inline-flex items-center gap-1.5 text-xs font-semibold text-teal-600 hover:underline dark:text-teal-400"
-              >
-                Open Full Transfer Summary & Verification Report{" "}
-                <ArrowRight className="size-3.5" />
-              </Link>
-            </div>
-          )}
         </div>
       )}
     </div>
   );
 }
-

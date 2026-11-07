@@ -7,6 +7,8 @@ export interface BeforeInstallPromptEvent extends Event {
   prompt(): Promise<void>;
 }
 
+const CURRENT_CACHE_PREFIX = "letsshare-v4.0";
+
 export async function registerDroplyServiceWorker(
   onOfflineReady?: (ready: boolean) => void
 ): Promise<ServiceWorkerRegistration | null> {
@@ -20,14 +22,30 @@ export async function registerDroplyServiceWorker(
   }
 
   try {
+    if ("caches" in window) {
+      const keys = await window.caches.keys();
+      for (const key of keys) {
+        if (!key.startsWith(CURRENT_CACHE_PREFIX)) {
+          await window.caches.delete(key);
+        }
+      }
+    }
+
     const registration = await navigator.serviceWorker.register("/sw.js", {
       scope: "/",
+      updateViaCache: "none",
     });
+
+    void registration.update();
 
     const triggerPrewarm = (sw: ServiceWorker | null) => {
       if (!sw) return;
       sw.postMessage({ type: "PREWARM_ROUTES" });
     };
+
+    if (registration.waiting) {
+      registration.waiting.postMessage({ type: "SKIP_WAITING" });
+    }
 
     if (registration.active) {
       triggerPrewarm(registration.active);
@@ -40,7 +58,6 @@ export async function registerDroplyServiceWorker(
       installing.addEventListener("statechange", () => {
         if (installing.state === "installed") {
           if (navigator.serviceWorker.controller) {
-            // New update available, activate immediately
             installing.postMessage({ type: "SKIP_WAITING" });
           } else {
             triggerPrewarm(installing);
@@ -56,10 +73,9 @@ export async function registerDroplyServiceWorker(
       }
     });
 
-    // Also verify Cache Storage directly
     if ("caches" in window) {
       const keys = await window.caches.keys();
-      const hasShell = keys.some((k) => k.startsWith("droply-"));
+      const hasShell = keys.some((k) => k.startsWith(CURRENT_CACHE_PREFIX));
       if (hasShell) {
         onOfflineReady?.(true);
       }
@@ -71,4 +87,3 @@ export async function registerDroplyServiceWorker(
     return null;
   }
 }
-

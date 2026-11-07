@@ -5,14 +5,14 @@ import { Navbar } from "@/components/layout/navbar";
 import { Footer } from "@/components/layout/footer";
 
 export const metadata: Metadata = {
-  title: "Droply – Easy Offline File Sharing",
+  title: "LetsShare – Offline File Transfer",
   description:
-    "Share files directly between devices using a QR code. No internet, no uploads, no accounts needed.",
+    "Send files directly between devices over Wi-Fi or Hotspot using a QR code.",
   manifest: "/manifest.json",
   appleWebApp: {
     capable: true,
     statusBarStyle: "default",
-    title: "Droply",
+    title: "LetsShare",
   },
   icons: {
     icon: [
@@ -24,7 +24,7 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#4f46e5",
+  themeColor: "#181816",
   width: "device-width",
   initialScale: 1,
 };
@@ -36,10 +36,10 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className="h-full" suppressHydrationWarning>
-      <body className="min-h-full flex flex-col bg-background text-foreground pb-20 md:pb-0 selection:bg-indigo-500/20 selection:text-indigo-600">
+      <body className="min-h-full flex flex-col bg-background text-foreground pb-20">
         <DroplySessionProvider>
           <Navbar />
-          <main className="flex-1 mx-auto w-full max-w-3xl px-4 py-5 sm:px-6 sm:py-8">
+          <main className="flex-1 mx-auto w-full max-w-lg px-4 py-6">
             {children}
           </main>
           <Footer />

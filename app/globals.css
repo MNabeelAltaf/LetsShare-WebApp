@@ -7,10 +7,10 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-    "Helvetica Neue", Arial, sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
-    "Liberation Mono", "Courier New", monospace;
+  --font-sans: "Plus Jakarta Sans", "Inter", -apple-system, BlinkMacSystemFont,
+    "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas,
+    monospace;
   --font-heading: var(--font-sans);
   --color-ring: var(--ring);
   --color-input: var(--input);
@@ -31,52 +31,52 @@
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) * 1.4);
-  --radius-2xl: calc(var(--radius) * 1.8);
-  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-xl: calc(var(--radius) * 1.3);
+  --radius-2xl: calc(var(--radius) * 1.6);
+  --radius-3xl: calc(var(--radius) * 2);
 }
 
 :root {
-  --background: #f8fafc;
-  --foreground: #0f172a;
+  --background: #f5f3ef;
+  --foreground: #181816;
   --card: #ffffff;
-  --card-foreground: #0f172a;
+  --card-foreground: #181816;
   --popover: #ffffff;
-  --popover-foreground: #0f172a;
-  --primary: #4f46e5;
+  --popover-foreground: #181816;
+  --primary: #d94826;
   --primary-foreground: #ffffff;
-  --secondary: #f1f5f9;
-  --secondary-foreground: #1e293b;
-  --muted: #f1f5f9;
-  --muted-foreground: #64748b;
-  --accent: #eef2ff;
-  --accent-foreground: #4338ca;
-  --destructive: #ef4444;
-  --border: #e2e8f0;
-  --input: #e2e8f0;
-  --ring: #6366f1;
-  --radius: 0.75rem;
+  --secondary: #ebe8e1;
+  --secondary-foreground: #181816;
+  --muted: #ebe8e1;
+  --muted-foreground: #6b6860;
+  --accent: #f0ece3;
+  --accent-foreground: #181816;
+  --destructive: #c83228;
+  --border: #dfdbd2;
+  --input: #dfdbd2;
+  --ring: #d94826;
+  --radius: 0.625rem;
 }
 
 .dark {
-  --background: #0b0f19;
-  --foreground: #f8fafc;
-  --card: #111827;
-  --card-foreground: #f8fafc;
-  --popover: #111827;
-  --popover-foreground: #f8fafc;
-  --primary: #6366f1;
+  --background: #141413;
+  --foreground: #f2f0ea;
+  --card: #1d1d1b;
+  --card-foreground: #f2f0ea;
+  --popover: #1d1d1b;
+  --popover-foreground: #f2f0ea;
+  --primary: #e25534;
   --primary-foreground: #ffffff;
-  --secondary: #1e293b;
-  --secondary-foreground: #f1f5f9;
-  --muted: #1e293b;
-  --muted-foreground: #94a3b8;
-  --accent: #1e1b4b;
-  --accent-foreground: #c7d2fe;
-  --destructive: #f87171;
-  --border: #1e293b;
-  --input: #1e293b;
-  --ring: #818cf8;
+  --secondary: #282825;
+  --secondary-foreground: #f2f0ea;
+  --muted: #282825;
+  --muted-foreground: #9c988e;
+  --accent: #282825;
+  --accent-foreground: #f2f0ea;
+  --destructive: #e04f44;
+  --border: #2e2e2a;
+  --input: #2e2e2a;
+  --ring: #e25534;
 }
 
 @layer base {
@@ -85,7 +85,7 @@
   }
   body {
     @apply bg-background text-foreground font-sans antialiased;
-    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-      "Helvetica Neue", Arial, sans-serif;
+    font-family: "Plus Jakarta Sans", "Inter", -apple-system, BlinkMacSystemFont,
+      "Segoe UI", Roboto, sans-serif;
   }
 }
