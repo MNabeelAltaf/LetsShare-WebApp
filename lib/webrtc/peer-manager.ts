@@ -6,6 +6,7 @@ import {
   WebRTCConnectionState,
 } from "@/lib/types";
 import { generateSecureToken, generateSessionId } from "@/lib/security/crypto";
+import { isPayloadExpired } from "@/lib/signaling/sdp-compact";
 
 export interface PeerManagerCallbacks {
   onConnectionStateChange?: (state: WebRTCConnectionState) => void;
@@ -15,23 +16,46 @@ export interface PeerManagerCallbacks {
   onDataChannelReady?: (channel: RTCDataChannel) => void;
 }
 
-const ICE_GATHER_TIMEOUT_LOCAL_MS = 2200;
-const ICE_GATHER_TIMEOUT_STUN_MS = 4500;
-const CONNECTION_ESTABLISH_TIMEOUT_MS = 25000;
-const SESSION_EXPIRY_SECONDS = 15 * 60; // 15 minutes
+const ICE_GATHER_TIMEOUT_LOCAL_MS = 3500;
+const ICE_GATHER_TIMEOUT_STUN_MS = 5000;
+const ICE_CANDIDATE_SETTLE_LOCAL_MS = 450;
+const CONNECTION_ESTABLISH_TIMEOUT_MS = 30000;
+const DISCONNECT_GRACE_PERIOD_MS = 6000;
 
 /**
  * Returns a friendly device label based on User-Agent without exposing personal details.
  */
 export function getLocalDeviceLabel(): string {
-  if (typeof navigator === "undefined") return "Droply Device";
+  if (typeof navigator === "undefined") return "LetsShare Device";
   const ua = navigator.userAgent || "";
-  if (/Android/i.test(ua)) return "Android Device";
-  if (/iPhone|iPad|iPod/i.test(ua)) return "iOS Device";
+  if (/Android/i.test(ua)) return "Android Phone";
+  if (/iPhone|iPad|iPod/i.test(ua)) return "iPhone / iPad";
   if (/Windows/i.test(ua)) return "Windows PC";
   if (/Macintosh|Mac OS X/i.test(ua)) return "Mac";
-  if (/Linux/i.test(ua)) return "Linux Device";
+  if (/Linux/i.test(ua)) return "Linux PC";
   return "Browser Peer";
+}
+
+/**
+ * Ensures all gathered ICE candidates are present in the final SDP string,
+ * handling browsers that do not immediately update `pc.localDescription.sdp` before `iceGatheringState === "complete"`.
+ */
+function ensureCandidatesInSdp(sdp: string, gatheredCandidates: string[]): string {
+  if (gatheredCandidates.length === 0) return sdp;
+  let updated = sdp.replace(/\r?\n/g, "\r\n");
+  if (!updated.endsWith("\r\n")) {
+    updated += "\r\n";
+  }
+
+  for (const rawCand of gatheredCandidates) {
+    const clean = rawCand.trim().replace(/^a=/, "");
+    if (!clean) continue;
+    const attrLine = `a=${clean}`;
+    if (!updated.includes(clean)) {
+      updated += `${attrLine}\r\n`;
+    }
+  }
+  return updated;
 }
 
 export class WebRTCPeerManager {
@@ -39,6 +63,7 @@ export class WebRTCPeerManager {
   private dc: RTCDataChannel | null = null;
   private callbacks: PeerManagerCallbacks;
   private connectionTimer: ReturnType<typeof setTimeout> | null = null;
+  private disconnectGraceTimer: ReturnType<typeof setTimeout> | null = null;
   private sessionId: string = "";
   private sessionToken: string = "";
   private peerDeviceName: string = "Remote Peer";
@@ -70,6 +95,7 @@ export class WebRTCPeerManager {
   }
 
   private setState(next: WebRTCConnectionState): void {
+    if (this.state === next) return;
     this.state = next;
     this.callbacks.onConnectionStateChange?.(next);
   }
@@ -78,8 +104,13 @@ export class WebRTCPeerManager {
     this.cleanupPeerConnection();
     this.signalingMode = mode;
 
-    if (typeof window === "undefined" || typeof RTCPeerConnection === "undefined") {
-      throw new Error("WebRTC (RTCPeerConnection) is not supported in this browser.");
+    if (
+      typeof window === "undefined" ||
+      typeof RTCPeerConnection === "undefined"
+    ) {
+      throw new Error(
+        "WebRTC (RTCPeerConnection) is not supported in this browser."
+      );
     }
 
     const config: RTCConfiguration = {
@@ -101,21 +132,27 @@ export class WebRTCPeerManager {
       if (!this.pc) return;
       const s = this.pc.connectionState;
       if (s === "connecting") {
-        this.setState("connecting");
+        this.clearDisconnectGraceTimer();
+        if (this.state !== "connected") {
+          this.setState("connecting");
+        }
       } else if (s === "connected") {
         this.clearConnectionTimer();
+        this.clearDisconnectGraceTimer();
         this.setState("connected");
         void this.inspectActiveRoute();
       } else if (s === "disconnected") {
-        this.setState("disconnected");
+        this.scheduleDisconnectCheck();
       } else if (s === "failed") {
         this.clearConnectionTimer();
+        this.clearDisconnectGraceTimer();
         this.setState("failed");
         this.callbacks.onError?.(
           "Direct peer-to-peer connection failed. Ensure both devices are on the same Wi-Fi network or mobile hotspot and AP isolation / firewall is not blocking UDP traffic."
         );
       } else if (s === "closed") {
         this.clearConnectionTimer();
+        this.clearDisconnectGraceTimer();
         this.setState("closed");
       }
     };
@@ -125,12 +162,16 @@ export class WebRTCPeerManager {
       const iceState = this.pc.iceConnectionState;
       if (iceState === "connected" || iceState === "completed") {
         this.clearConnectionTimer();
+        this.clearDisconnectGraceTimer();
         if (this.state !== "connected") {
           this.setState("connected");
           void this.inspectActiveRoute();
         }
+      } else if (iceState === "disconnected") {
+        this.scheduleDisconnectCheck();
       } else if (iceState === "failed") {
         this.clearConnectionTimer();
+        this.clearDisconnectGraceTimer();
         this.setState("failed");
         this.callbacks.onError?.(
           "ICE connectivity check failed. Verify both devices share the same local Wi-Fi or mobile hotspot."
@@ -139,6 +180,33 @@ export class WebRTCPeerManager {
     };
 
     return pc;
+  }
+
+  private scheduleDisconnectCheck(): void {
+    this.clearDisconnectGraceTimer();
+    this.disconnectGraceTimer = setTimeout(() => {
+      if (!this.pc) return;
+      const connState = this.pc.connectionState;
+      const iceState = this.pc.iceConnectionState;
+      if (
+        connState === "disconnected" ||
+        connState === "failed" ||
+        iceState === "disconnected" ||
+        iceState === "failed"
+      ) {
+        this.setState("disconnected");
+        this.callbacks.onError?.(
+          "Peer connection was interrupted. Keep both devices awake and connected to the same Wi-Fi or hotspot."
+        );
+      }
+    }, DISCONNECT_GRACE_PERIOD_MS);
+  }
+
+  private clearDisconnectGraceTimer(): void {
+    if (this.disconnectGraceTimer) {
+      clearTimeout(this.disconnectGraceTimer);
+      this.disconnectGraceTimer = null;
+    }
   }
 
   private attachDataChannel(channel: RTCDataChannel): void {
@@ -154,6 +222,7 @@ export class WebRTCPeerManager {
 
     channel.onopen = () => {
       this.clearConnectionTimer();
+      this.clearDisconnectGraceTimer();
       notifyDcState();
       this.setState("connected");
       void this.inspectActiveRoute();
@@ -162,34 +231,50 @@ export class WebRTCPeerManager {
 
     channel.onclose = () => {
       notifyDcState();
+      if (this.state === "connected") {
+        this.setState("disconnected");
+      }
     };
 
     channel.onerror = () => {
       notifyDcState();
-      this.callbacks.onError?.("WebRTC DataChannel encountered a transport error.");
+      this.callbacks.onError?.(
+        "WebRTC DataChannel encountered a transport error."
+      );
     };
   }
 
   /**
-   * Waits for ICE candidate gathering to finish (or until the timeout elapses after at least 1 candidate is gathered).
+   * Waits for ICE candidate gathering to finish, or settles rapidly in local mode once
+   * valid UDP host candidates have been gathered. Returns all explicitly observed candidate strings.
    */
-  private waitForIceGathering(pc: RTCPeerConnection, mode: SignalingMode): Promise<void> {
+  private waitForIceGathering(
+    pc: RTCPeerConnection,
+    mode: SignalingMode
+  ): Promise<string[]> {
+    const gathered: string[] = [];
+
     if (pc.iceGatheringState === "complete") {
-      return Promise.resolve();
+      return Promise.resolve(gathered);
     }
 
-    const timeoutMs =
-      mode === "offline-local" ? ICE_GATHER_TIMEOUT_LOCAL_MS : ICE_GATHER_TIMEOUT_STUN_MS;
+    const maxTimeoutMs =
+      mode === "offline-local"
+        ? ICE_GATHER_TIMEOUT_LOCAL_MS
+        : ICE_GATHER_TIMEOUT_STUN_MS;
 
-    return new Promise<void>((resolve) => {
+    return new Promise<string[]>((resolve) => {
       let resolved = false;
+      let settleTimer: ReturnType<typeof setTimeout> | null = null;
+
       const finish = () => {
         if (resolved) return;
         resolved = true;
-        clearTimeout(timer);
+        clearTimeout(maxTimer);
+        if (settleTimer) clearTimeout(settleTimer);
         pc.removeEventListener("icegatheringstatechange", onStateChange);
         pc.removeEventListener("icecandidate", onCandidate);
-        resolve();
+        resolve(gathered);
       };
 
       const onStateChange = () => {
@@ -201,10 +286,21 @@ export class WebRTCPeerManager {
       const onCandidate = (event: RTCPeerConnectionIceEvent) => {
         if (event.candidate === null) {
           finish();
+          return;
+        }
+        const candStr = event.candidate.candidate;
+        if (candStr) {
+          gathered.push(candStr);
+          // In offline-local mode, once we have at least one UDP candidate,
+          // wait a brief settle window for additional interfaces instead of blocking for the full timeout
+          if (mode === "offline-local" && /\s+udp\s+/i.test(candStr)) {
+            if (settleTimer) clearTimeout(settleTimer);
+            settleTimer = setTimeout(finish, ICE_CANDIDATE_SETTLE_LOCAL_MS);
+          }
         }
       };
 
-      const timer = setTimeout(finish, timeoutMs);
+      const maxTimer = setTimeout(finish, maxTimeoutMs);
 
       pc.addEventListener("icegatheringstatechange", onStateChange);
       pc.addEventListener("icecandidate", onCandidate);
@@ -232,13 +328,14 @@ export class WebRTCPeerManager {
 
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-    await this.waitForIceGathering(pc, options.mode);
+    const gathered = await this.waitForIceGathering(pc, options.mode);
 
     const localDesc = pc.localDescription;
     if (!localDesc || !localDesc.sdp) {
       throw new Error("Failed to gather local WebRTC SDP offer.");
     }
 
+    const completeSdp = ensureCandidatesInSdp(localDesc.sdp, gathered);
     this.setState("awaiting-answer-scan");
 
     return {
@@ -247,7 +344,7 @@ export class WebRTCPeerManager {
       tok: this.sessionToken,
       dev: getLocalDeviceLabel(),
       m: options.mode === "online-stun" ? 1 : 0,
-      sdp: localDesc.sdp,
+      sdp: completeSdp,
       ts: Math.floor(Date.now() / 1000),
       f: {
         c: options.fileCount,
@@ -260,14 +357,17 @@ export class WebRTCPeerManager {
    * Step 2 (Receiver): Accepts the Sender's decoded Offer, validates session expiration,
    * sets the remote description, creates an SDP Answer, waits for ICE gathering, and returns the CompactSDP answer payload.
    */
-  public async acceptOfferAndCreateAnswer(offerPayload: CompactSDP): Promise<CompactSDP> {
+  public async acceptOfferAndCreateAnswer(
+    offerPayload: CompactSDP
+  ): Promise<CompactSDP> {
     if (offerPayload.t !== "o") {
-      throw new Error("Scanned QR code is not a Sender Offer.");
+      throw new Error("Provided code/QR is not a Sender Offer.");
     }
 
-    const nowSec = Math.floor(Date.now() / 1000);
-    if (offerPayload.ts && Math.abs(nowSec - offerPayload.ts) > SESSION_EXPIRY_SECONDS) {
-      throw new Error("This QR pairing session has expired. Please generate a fresh QR code on the sender.");
+    if (isPayloadExpired(offerPayload)) {
+      throw new Error(
+        "This pairing session has expired (older than 15 minutes). Please generate a fresh QR/code on the sender."
+      );
     }
 
     this.setState("processing-offer");
@@ -275,7 +375,8 @@ export class WebRTCPeerManager {
     this.sessionToken = offerPayload.tok;
     this.peerDeviceName = offerPayload.dev || "Sender Device";
 
-    const mode: SignalingMode = offerPayload.m === 1 ? "online-stun" : "offline-local";
+    const mode: SignalingMode =
+      offerPayload.m === 1 ? "online-stun" : "offline-local";
     const pc = this.createPeerConnection(mode);
 
     pc.ondatachannel = (event) => {
@@ -291,12 +392,14 @@ export class WebRTCPeerManager {
 
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
-    await this.waitForIceGathering(pc, mode);
+    const gathered = await this.waitForIceGathering(pc, mode);
 
     const localDesc = pc.localDescription;
     if (!localDesc || !localDesc.sdp) {
       throw new Error("Failed to generate WebRTC SDP answer.");
     }
+
+    const completeSdp = ensureCandidatesInSdp(localDesc.sdp, gathered);
 
     this.setState("awaiting-peer-connection");
     this.startConnectionTimeout(CONNECTION_ESTABLISH_TIMEOUT_MS * 2);
@@ -307,25 +410,35 @@ export class WebRTCPeerManager {
       tok: this.sessionToken,
       dev: getLocalDeviceLabel(),
       m: offerPayload.m,
-      sdp: localDesc.sdp,
+      sdp: completeSdp,
       ts: Math.floor(Date.now() / 1000),
     };
   }
 
   /**
-   * Step 3 (Sender): Accepts the Receiver's decoded Answer, verifies session ID & security token,
+   * Step 3 (Sender): Accepts the Receiver's decoded Answer, verifies session ID, security token, and expiry,
    * sets the remote description, and initiates the direct WebRTC connection.
    */
   public async acceptReceiverAnswer(answerPayload: CompactSDP): Promise<void> {
     if (!this.pc) {
-      throw new Error("No active Sender peer connection. Please start a new session.");
+      throw new Error(
+        "No active Sender peer connection. Please start a new session."
+      );
     }
     if (answerPayload.t !== "a") {
-      throw new Error("Scanned QR code is not a Receiver Answer.");
+      throw new Error("Provided code/QR is not a Receiver Answer.");
     }
-    if (answerPayload.sid !== this.sessionId || answerPayload.tok !== this.sessionToken) {
+    if (isPayloadExpired(answerPayload)) {
       throw new Error(
-        "Session mismatch! This Answer QR belongs to a different pairing session."
+        "This Receiver response code has expired. Please restart the pairing session."
+      );
+    }
+    if (
+      answerPayload.sid !== this.sessionId ||
+      answerPayload.tok !== this.sessionToken
+    ) {
+      throw new Error(
+        "Session mismatch! This Answer code belongs to a different pairing session."
       );
     }
 
@@ -376,9 +489,15 @@ export class WebRTCPeerManager {
         const remoteType = remoteCand?.candidateType;
 
         if (localType === "relay" || remoteType === "relay") {
-          this.callbacks.onRouteDetected?.("relay-turn", `${localType} ↔ ${remoteType}`);
+          this.callbacks.onRouteDetected?.(
+            "relay-turn",
+            `${localType} ↔ ${remoteType}`
+          );
         } else if (localType === "host" && remoteType === "host") {
-          this.callbacks.onRouteDetected?.("direct-lan", "Direct Local LAN / Hotspot (host ↔ host)");
+          this.callbacks.onRouteDetected?.(
+            "direct-lan",
+            "Direct Local LAN / Hotspot (host ↔ host)"
+          );
         } else {
           this.callbacks.onRouteDetected?.(
             "stun-nat",
@@ -417,6 +536,7 @@ export class WebRTCPeerManager {
 
   private cleanupPeerConnection(): void {
     this.clearConnectionTimer();
+    this.clearDisconnectGraceTimer();
     if (this.dc) {
       try {
         this.dc.onopen = null;
@@ -448,4 +568,3 @@ export class WebRTCPeerManager {
     this.callbacks.onDataChannelStateChange?.("closed");
   }
 }
-

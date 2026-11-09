@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import {
   Home,
   ArrowUpRight,
@@ -18,6 +18,7 @@ import { cn } from "@/lib/utils";
 
 export function Navbar() {
   const pathname = usePathname();
+  const router = useRouter();
   const {
     canInstallPWA,
     isInstalledPWA,
@@ -25,13 +26,14 @@ export function Navbar() {
     setIsInstallModalOpen,
   } = useDroplySession();
 
-  const [darkMode, setDarkMode] = useState(false);
+  const [darkMode, setDarkMode] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return localStorage.getItem("letsshare-theme") === "dark";
+  });
 
   useEffect(() => {
-    const saved = localStorage.getItem("letsshare-theme");
-    const isDark = saved ? saved === "dark" : false;
-    document.documentElement.classList.toggle("dark", isDark);
-  }, []);
+    document.documentElement.classList.toggle("dark", darkMode);
+  }, [darkMode]);
 
   const toggleTheme = () => {
     const next = !darkMode;
@@ -54,14 +56,21 @@ export function Navbar() {
         <div className="mx-auto flex h-14 max-w-lg items-center justify-between px-4">
           <Link
             href="/"
-            className="flex items-center gap-2.5 text-foreground"
+            aria-label="LetsShare Home"
+            className="flex items-center gap-2 text-foreground touch-manipulation"
           >
-            <span className="flex size-7 items-center justify-center rounded-md bg-foreground text-xs font-black tracking-tighter text-background">
-              LS
-            </span>
-            <span className="text-base font-bold tracking-tight">
-              LetsShare
-            </span>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="/icons/logo-light.png"
+              alt="LetsShare"
+              className="h-7 w-auto object-contain select-none dark:hidden"
+            />
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="/icons/logo-dark.png"
+              alt="LetsShare"
+              className="hidden h-7 w-auto object-contain select-none dark:block"
+            />
           </Link>
 
           <div className="flex items-center gap-2">
@@ -75,10 +84,10 @@ export function Navbar() {
                     setIsInstallModalOpen(true);
                   }
                 }}
-                className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-foreground/15 bg-card px-3 text-xs font-semibold text-foreground transition-colors hover:bg-secondary"
+                className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-foreground/15 bg-card px-3 text-xs font-semibold text-foreground transition-colors hover:bg-secondary active:scale-95 touch-manipulation"
               >
-                <Download className="size-3.5 text-primary" />
-                <span>Install App</span>
+                <Download className="size-3.5 text-primary pointer-events-none" />
+                <span className="pointer-events-none">Install App</span>
               </button>
             )}
 
@@ -86,22 +95,23 @@ export function Navbar() {
               type="button"
               onClick={toggleTheme}
               aria-label="Switch theme"
-              className="flex size-8 items-center justify-center rounded-lg border border-border bg-card text-foreground transition-colors hover:bg-secondary"
+              className="flex size-8 items-center justify-center rounded-lg border border-border bg-card text-foreground transition-colors hover:bg-secondary active:scale-95 touch-manipulation"
             >
               {darkMode ? (
-                <Sun className="size-4" />
+                <Sun className="size-4 pointer-events-none" />
               ) : (
-                <Moon className="size-4" />
+                <Moon className="size-4 pointer-events-none" />
               )}
             </button>
           </div>
         </div>
       </header>
 
-      {/* Fixed Bottom App Bar */}
+      {/* Fixed Bottom App Bar with Safe Area & Mobile Touch Fixes */}
       <nav
         aria-label="Bottom Navigation"
-        className="fixed bottom-0 left-0 right-0 z-50 border-t border-border bg-card"
+        data-no-swipe="true"
+        className="fixed bottom-0 left-0 right-0 z-50 border-t border-border bg-card/98 backdrop-blur-md pb-[env(safe-area-inset-bottom)] transform-gpu pointer-events-auto select-none"
       >
         <div className="mx-auto grid h-16 max-w-lg grid-cols-4 px-2">
           {navItems.map((item) => {
@@ -114,18 +124,28 @@ export function Navbar() {
               <Link
                 key={item.href}
                 href={item.href}
+                onClick={(e) => {
+                  // Ensure reliable navigation across mobile WebViews and sticky touch states
+                  if (pathname !== item.href) {
+                    e.stopPropagation();
+                    router.push(item.href);
+                  }
+                }}
+                aria-current={active ? "page" : undefined}
                 className={cn(
-                  "relative flex flex-col items-center justify-center gap-1 transition-colors",
+                  "relative flex h-full min-h-[56px] w-full flex-col items-center justify-center gap-1 rounded-lg transition-colors cursor-pointer touch-manipulation active:bg-secondary/70 [-webkit-tap-highlight-color:transparent]",
                   active
                     ? "text-primary font-bold"
                     : "text-muted-foreground hover:text-foreground font-medium"
                 )}
               >
                 {active && (
-                  <span className="absolute top-0 h-0.5 w-8 bg-primary" />
+                  <span className="pointer-events-none absolute top-0 h-0.5 w-8 rounded-full bg-primary" />
                 )}
-                <Icon className="size-5" />
-                <span className="text-[11px] leading-none">{item.label}</span>
+                <Icon className="pointer-events-none size-5 shrink-0" />
+                <span className="pointer-events-none text-[11px] leading-none">
+                  {item.label}
+                </span>
               </Link>
             );
           })}

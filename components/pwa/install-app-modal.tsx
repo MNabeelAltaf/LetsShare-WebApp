@@ -45,15 +45,25 @@ export function InstallAppModal() {
           <X className="size-4" />
         </button>
 
-        <h2
-          id="install-modal-title"
-          className="text-base font-bold text-foreground"
-        >
-          Install LetsShare
-        </h2>
-        <p className="mt-1 text-xs text-muted-foreground">
-          Add LetsShare to your home screen so it opens without internet.
-        </p>
+        <div className="flex items-center gap-3">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/icons/app-icon.png"
+            alt="LetsShare Icon"
+            className="size-11 rounded-xl object-contain shadow-xs select-none"
+          />
+          <div>
+            <h2
+              id="install-modal-title"
+              className="text-base font-bold text-foreground"
+            >
+              Install LetsShare
+            </h2>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Add LetsShare to your home screen so it opens without internet.
+            </p>
+          </div>
+        </div>
 
         {canInstallPWA && (
           <Button

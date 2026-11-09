@@ -1,4 +1,4 @@
-const CACHE_VERSION = "letsshare-v4.0";
+const CACHE_VERSION = "letsshare-v5.0";
 const SHELL_CACHE = `${CACHE_VERSION}-shell`;
 const STATIC_CACHE = `${CACHE_VERSION}-static`;
 
@@ -9,27 +9,76 @@ const APP_SHELL_URLS = [
   "/setup",
   "/transfer",
   "/manifest.json",
+  "/favicon.ico",
   "/icons/icon.svg",
   "/icons/icon-192.png",
   "/icons/icon-512.png",
+  "/icons/icon-maskable-512.png",
+  "/icons/app-icon.png",
+  "/icons/apple-touch-icon.png",
+  "/icons/logo-light.png",
+  "/icons/logo-dark.png",
+  "/icons/logo-mark.png",
+  "/icons/favicon-32x32.png",
+  "/icons/favicon-16x16.png",
 ];
+
+/**
+ * Extracts Next.js static chunk URLs (`/_next/static/...`) from an HTML string
+ * so route-specific JS and CSS bundles are pre-cached alongside the HTML shell.
+ */
+function extractStaticAssetUrls(htmlText) {
+  const matches = htmlText.match(/\/_next\/static\/[^"'\s<>\\)]+/g) || [];
+  return Array.from(new Set(matches));
+}
+
+async function prewarmShellAndAssets(extraAssetUrls = []) {
+  const shellCache = await caches.open(SHELL_CACHE);
+  const staticCache = await caches.open(STATIC_CACHE);
+  const discoveredAssets = new Set(extraAssetUrls);
+
+  await Promise.allSettled(
+    APP_SHELL_URLS.map(async (url) => {
+      try {
+        const response = await fetch(url, { cache: "no-cache" });
+        if (response && response.ok) {
+          const clone = response.clone();
+          await shellCache.put(url, clone);
+
+          const contentType = response.headers.get("content-type") || "";
+          if (contentType.includes("text/html")) {
+            const html = await response.text();
+            for (const assetUrl of extractStaticAssetUrls(html)) {
+              discoveredAssets.add(assetUrl);
+            }
+          }
+        }
+      } catch {
+        // Ignore offline errors during prewarm
+      }
+    })
+  );
+
+  await Promise.allSettled(
+    Array.from(discoveredAssets).map(async (assetUrl) => {
+      try {
+        const existing = await staticCache.match(assetUrl);
+        if (existing) return;
+        const res = await fetch(assetUrl, { cache: "force-cache" });
+        if (res && res.ok) {
+          await staticCache.put(assetUrl, res);
+        }
+      } catch {
+        // Ignore offline errors
+      }
+    })
+  );
+}
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
     (async () => {
-      const cache = await caches.open(SHELL_CACHE);
-      await Promise.allSettled(
-        APP_SHELL_URLS.map(async (url) => {
-          try {
-            const response = await fetch(url, { cache: "no-cache" });
-            if (response && response.ok) {
-              await cache.put(url, response);
-            }
-          } catch {
-            // Ignore offline errors during install
-          }
-        })
-      );
+      await prewarmShellAndAssets();
       await self.skipWaiting();
     })()
   );
@@ -39,27 +88,15 @@ self.addEventListener("activate", (event) => {
   event.waitUntil(
     (async () => {
       const keys = await caches.keys();
-      let hadLegacyCache = false;
       await Promise.all(
         keys.map((key) => {
           if (key !== SHELL_CACHE && key !== STATIC_CACHE) {
-            hadLegacyCache = true;
             return caches.delete(key);
           }
           return Promise.resolve();
         })
       );
       await self.clients.claim();
-      if (hadLegacyCache) {
-        const windowClients = await self.clients.matchAll({ type: "window" });
-        for (const client of windowClients) {
-          try {
-            await client.navigate(client.url);
-          } catch {
-            // Ignore navigation errors
-          }
-        }
-      }
     })()
   );
 });
@@ -73,23 +110,15 @@ self.addEventListener("message", (event) => {
   }
 
   if (data.type === "PREWARM_ROUTES") {
+    const extraAssets = Array.isArray(data.assets) ? data.assets : [];
     event.waitUntil(
       (async () => {
-        const cache = await caches.open(SHELL_CACHE);
-        await Promise.allSettled(
-          APP_SHELL_URLS.map(async (url) => {
-            try {
-              const res = await fetch(url, { cache: "no-cache" });
-              if (res && res.ok) {
-                await cache.put(url, res);
-              }
-            } catch {
-              // Ignore when offline
-            }
-          })
-        );
+        await prewarmShellAndAssets(extraAssets);
         if (event.source) {
-          event.source.postMessage({ type: "OFFLINE_CACHE_READY", cached: true });
+          event.source.postMessage({
+            type: "OFFLINE_CACHE_READY",
+            cached: true,
+          });
         }
       })()
     );
@@ -110,6 +139,28 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
+  // Immutable hashed Next.js static chunks: Cache-First with network fallback
+  if (url.pathname.startsWith("/_next/static/")) {
+    event.respondWith(
+      (async () => {
+        const staticCache = await caches.open(STATIC_CACHE);
+        const cached = await staticCache.match(request);
+        if (cached) return cached;
+
+        try {
+          const networkResponse = await fetch(request);
+          if (networkResponse && networkResponse.ok) {
+            staticCache.put(request, networkResponse.clone());
+          }
+          return networkResponse;
+        } catch {
+          return new Response("Offline asset unavailable", { status: 503 });
+        }
+      })()
+    );
+    return;
+  }
+
   event.respondWith(
     (async () => {
       const isNavigation =
@@ -121,7 +172,10 @@ self.addEventListener("fetch", (event) => {
       try {
         const networkResponse = await fetch(request);
         if (networkResponse && networkResponse.ok) {
-          cache.put(isNavigation ? url.pathname : request, networkResponse.clone());
+          cache.put(
+            isNavigation ? url.pathname : request,
+            networkResponse.clone()
+          );
         }
         return networkResponse;
       } catch {

@@ -44,6 +44,16 @@ function openDroplyDB(): Promise<IDBDatabase | null> {
   });
 }
 
+export async function initializeOfflineDatabase(): Promise<boolean> {
+  if (typeof window === "undefined" || !("indexedDB" in window)) {
+    return true;
+  }
+  const db = await openDroplyDB();
+  if (!db) return false;
+  db.close();
+  return true;
+}
+
 export async function saveSessionSummary(summary: TransferSessionSummary): Promise<void> {
   const db = await openDroplyDB();
   if (!db) return;

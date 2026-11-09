@@ -6,10 +6,19 @@ import { CompactSDP, QRFrame } from "@/lib/types";
  * Keeping each QR frame around ~650 chars ensures version 14-18 QR codes
  * with Error Correction Level 'M' or 'L', which scan almost instantaneously
  * even on older phone cameras or glare-heavy laptop screens.
- * We also allow larger single-QR mode (~1100 chars) when the compressed SDP fits!
+ * We also allow larger single-QR mode (~950 chars) when the compressed SDP fits!
  */
 export const DEFAULT_SINGLE_QR_LIMIT = 950;
 export const DEFAULT_MULTI_QR_CHUNK_SIZE = 550;
+export const SESSION_EXPIRY_SECONDS = 15 * 60; // 15 minutes
+
+export interface ConnectionCodeValidationResult {
+  valid: boolean;
+  error?: string;
+  payload?: CompactSDP;
+  frame?: QRFrame;
+  isMultiFramePartial?: boolean;
+}
 
 /**
  * Strips non-essential SDP attributes for a pure WebRTC DataChannel (application/DTLS/SCTP)
@@ -33,14 +42,13 @@ export function minifyDataChannelSDP(sdp: string): string {
       continue;
     }
 
-    // For candidate lines, strip optional raddr/rport/generation/network-id/network-cost metadata
-    // while preserving foundation, component, transport, priority, ip, port, and typ.
+    // For candidate lines, strip optional generation/network-id/network-cost metadata
+    // while preserving foundation, component, transport, priority, ip/mDNS, port, and typ.
     if (line.startsWith("a=candidate:")) {
-      // Keep host and srflx candidates; strip TCP active/passive candidates that rarely work for WebRTC DataChannels
-      if (line.includes(" tcp ") || line.includes(" TCP ")) {
+      // Keep UDP candidates; strip TCP active/passive candidates that do not work for WebRTC UDP DataChannels
+      if (/\s+tcp\s+/i.test(line)) {
         continue;
       }
-      // Trim trailing non-essential extensions like generation 0 ufrag ... network-id ...
       const cleanedCandidate = line
         .replace(/\s+generation\s+\d+/i, "")
         .replace(/\s+network-id\s+\d+/i, "")
@@ -82,7 +90,8 @@ export function toBase64Url(bytes: Uint8Array): string {
  * Base64URL decode to Uint8Array
  */
 export function fromBase64Url(str: string): Uint8Array {
-  const padded = str.replace(/-/g, "+").replace(/_/g, "/");
+  const cleaned = str.replace(/\s+/g, "");
+  const padded = cleaned.replace(/-/g, "+").replace(/_/g, "/");
   const padLen = (4 - (padded.length % 4)) % 4;
   const base64 = padded + "=".repeat(padLen);
 
@@ -98,7 +107,7 @@ export function fromBase64Url(str: string): Uint8Array {
 }
 
 /**
- * Computes a short 6-character hex CRC-like checksum for payload integrity verification.
+ * Computes a short 6-character hex CRC32 checksum for payload integrity verification.
  */
 export function computeShortChecksum(input: string): string {
   let crc = 0xffffffff;
@@ -108,7 +117,11 @@ export function computeShortChecksum(input: string): string {
       crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
     }
   }
-  return ((crc ^ 0xffffffff) >>> 0).toString(16).padStart(8, "0").slice(0, 6).toUpperCase();
+  return ((crc ^ 0xffffffff) >>> 0)
+    .toString(16)
+    .padStart(8, "0")
+    .slice(0, 6)
+    .toUpperCase();
 }
 
 /**
@@ -133,22 +146,40 @@ export function decompressSignalingPayload(encoded: string): CompactSDP {
   const decompressedBytes = inflateSync(compressed);
   const json = strFromU8(decompressedBytes);
   const parsed = JSON.parse(json) as CompactSDP;
-  if (!parsed || (parsed.t !== "o" && parsed.t !== "a") || !parsed.sdp || !parsed.sid) {
-    throw new Error("Invalid Droply signaling payload structure");
+  if (
+    !parsed ||
+    (parsed.t !== "o" && parsed.t !== "a") ||
+    !parsed.sdp ||
+    !parsed.sid ||
+    !parsed.tok
+  ) {
+    throw new Error("Invalid LetsShare signaling payload structure.");
+  }
+  if (
+    !parsed.sdp.includes("a=ice-ufrag:") ||
+    !parsed.sdp.includes("a=fingerprint:")
+  ) {
+    throw new Error("Signaling code is missing required WebRTC ICE/DTLS parameters.");
   }
   parsed.sdp = normalizeSDP(parsed.sdp);
   return parsed;
 }
 
 /**
+ * Checks whether a CompactSDP timestamp is expired (older than 15 minutes).
+ */
+export function isPayloadExpired(
+  payload: CompactSDP,
+  nowSec = Math.floor(Date.now() / 1000)
+): boolean {
+  if (!payload.ts || !Number.isFinite(payload.ts)) return false;
+  return Math.abs(nowSec - payload.ts) > SESSION_EXPIRY_SECONDS;
+}
+
+/**
  * Encodes a CompactSDP into one or more QRFrames.
  * Format of each raw QR string:
  * `DP1|<sessionId>|<O|A>|<index>/<total>|<checksum>|<dataSlice>`
- *
- * Notice how self-contained this format is:
- * - If `compressed.length <= maxSingleLength` and `forceMultiFrame` is false, it produces `1/1` (a single QR code).
- * - If the SDP has many network interfaces/ICE candidates or the user switches to "Easy Scan (Multi-QR)" mode for low-res cameras,
- *   it automatically splits into `total` frames that cycle in an animated loop and can be scanned in ANY order!
  */
 export function encodeSDPToQRFrames(
   payload: CompactSDP,
@@ -167,7 +198,8 @@ export function encodeSDPToQRFrames(
   const forceMulti = options?.forceMultiFrame ?? false;
   const chunkSize = options?.chunkSize ?? DEFAULT_MULTI_QR_CHUNK_SIZE;
 
-  const canFitSingle = !forceMulti && compressed.length <= DEFAULT_SINGLE_QR_LIMIT;
+  const canFitSingle =
+    !forceMulti && compressed.length <= DEFAULT_SINGLE_QR_LIMIT;
   const slices: string[] = [];
 
   if (canFitSingle) {
@@ -193,7 +225,7 @@ export function encodeSDPToQRFrames(
     };
   });
 
-  // Also provide a single-line copyable connection string with header for manual / clipboard fallback
+  // Single-line copyable connection string with header for manual / clipboard pairing
   const compactCode = `DP1|${payload.sid}|${typeChar}|1/1|${checksum}|${compressed}`;
 
   return {
@@ -206,22 +238,25 @@ export function encodeSDPToQRFrames(
 
 /**
  * Parses a scanned QR string (or pasted connection code) into a QRFrame.
+ * Handles accidental whitespace or line wraps from messaging/clipboard copy-paste.
  */
 export function parseQRFrame(rawInput: string): QRFrame {
-  const trimmed = rawInput.trim();
+  const trimmed = rawInput.trim().replace(/[\r\n\s]+/g, "");
   const parts = trimmed.split("|");
   if (parts.length !== 6 || parts[0] !== "DP1") {
-    throw new Error("Unrecognized QR code. Please scan a valid Droply pairing QR code.");
+    throw new Error(
+      "Invalid connection code format. Make sure you copied or scanned a complete LetsShare code starting with 'DP1|'."
+    );
   }
 
   const [, sessionId, typeStr, seqStr, checksum, data] = parts;
-  if (typeStr !== "O" && typeStr !== "A") {
-    throw new Error("Invalid QR payload type.");
+  if (!sessionId || (typeStr !== "O" && typeStr !== "A") || !data) {
+    throw new Error("Invalid connection code header.");
   }
 
   const seqParts = seqStr.split("/");
   if (seqParts.length !== 2) {
-    throw new Error("Invalid QR frame sequence header.");
+    throw new Error("Invalid connection code frame header.");
   }
 
   const oneBasedIndex = parseInt(seqParts[0], 10);
@@ -233,7 +268,7 @@ export function parseQRFrame(rawInput: string): QRFrame {
     total < 1 ||
     oneBasedIndex > total
   ) {
-    throw new Error("Invalid QR frame index.");
+    throw new Error("Invalid connection code sequence number.");
   }
 
   return {
@@ -242,14 +277,89 @@ export function parseQRFrame(rawInput: string): QRFrame {
     type: typeStr,
     index: oneBasedIndex - 1,
     total,
-    checksum,
+    checksum: checksum.toUpperCase(),
     data,
     raw: trimmed,
   };
 }
 
 /**
- * Reassembles a complete set of QRFrames and verifies the checksum before decompressing.
+ * Validates a manual connection code (or single-frame QR string) without side effects,
+ * checking prefix, role type (Offer vs Answer), checksum integrity, decompression, and session expiry.
+ */
+export function validateConnectionCode(
+  rawInput: string,
+  expectedType?: "O" | "A"
+): ConnectionCodeValidationResult {
+  if (!rawInput || !rawInput.trim()) {
+    return {
+      valid: false,
+      error: "Please enter or paste a connection code.",
+    };
+  }
+
+  try {
+    const frame = parseQRFrame(rawInput);
+
+    if (expectedType && frame.type !== expectedType) {
+      const expectedName =
+        expectedType === "O" ? "Sender Code (Offer)" : "Receiver Response Code (Answer)";
+      const actualName =
+        frame.type === "O" ? "Sender Code (Offer)" : "Receiver Response Code (Answer)";
+      return {
+        valid: false,
+        frame,
+        error: `Wrong code type: expected a ${expectedName}, but you entered a ${actualName}.`,
+      };
+    }
+
+    if (frame.total > 1) {
+      return {
+        valid: false,
+        frame,
+        isMultiFramePartial: true,
+        error: `This is part ${frame.index + 1} of ${frame.total} of a multi-part QR code. Use the "Copy Connection Code" button on the other device to copy the complete single code.`,
+      };
+    }
+
+    const actualChecksum = computeShortChecksum(frame.data);
+    if (actualChecksum !== frame.checksum) {
+      return {
+        valid: false,
+        frame,
+        error:
+          "Connection code is incomplete or corrupted (checksum mismatch). Please copy the full code again.",
+      };
+    }
+
+    const payload = decompressSignalingPayload(frame.data);
+    if (isPayloadExpired(payload)) {
+      return {
+        valid: false,
+        frame,
+        error:
+          "This connection code has expired (older than 15 minutes). Please generate a new code on the other device.",
+      };
+    }
+
+    return {
+      valid: true,
+      payload,
+      frame,
+    };
+  } catch (err) {
+    return {
+      valid: false,
+      error:
+        err instanceof Error
+          ? err.message
+          : "Invalid or corrupted connection code.",
+    };
+  }
+}
+
+/**
+ * Reassembles a complete set of QRFrames and verifies the checksum and expiration before decompressing.
  */
 export class QRFrameAssembler {
   private sessionId: string | null = null;
@@ -276,8 +386,15 @@ export class QRFrameAssembler {
     const frame = parseQRFrame(rawInput);
 
     if (expectedType && frame.type !== expectedType) {
-      const label = expectedType === "O" ? "Sender Offer QR" : "Receiver Answer QR";
-      throw new Error(`Expected a ${label}, but scanned ${frame.type === "O" ? "an Offer" : "an Answer"} QR.`);
+      const label =
+        expectedType === "O"
+          ? "Sender Offer QR/Code"
+          : "Receiver Answer QR/Code";
+      throw new Error(
+        `Expected a ${label}, but received ${
+          frame.type === "O" ? "a Sender Offer" : "a Receiver Answer"
+        }.`
+      );
     }
 
     // If session or checksum changed (user restarted session on the other device), reset collector
@@ -297,7 +414,6 @@ export class QRFrameAssembler {
     this.chunks.set(frame.index, frame.data);
 
     if (this.chunks.size === this.total) {
-      // Reconstruct ordered string
       const ordered: string[] = [];
       for (let i = 0; i < this.total; i++) {
         const piece = this.chunks.get(i);
@@ -316,10 +432,19 @@ export class QRFrameAssembler {
       const actualChecksum = computeShortChecksum(fullCompressed);
       if (actualChecksum !== this.checksum) {
         this.reset();
-        throw new Error("QR payload checksum mismatch. Please scan again.");
+        throw new Error(
+          "Connection code checksum mismatch. Please scan or copy the full code again."
+        );
       }
 
       const payload = decompressSignalingPayload(fullCompressed);
+      if (isPayloadExpired(payload)) {
+        this.reset();
+        throw new Error(
+          "This connection session has expired (older than 15 minutes). Please generate a fresh QR/code."
+        );
+      }
+
       return {
         complete: true,
         receivedCount: this.total,
@@ -337,4 +462,3 @@ export class QRFrameAssembler {
     };
   }
 }
-

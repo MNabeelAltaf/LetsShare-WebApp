@@ -11,9 +11,11 @@ import {
   validateFileMetadata,
 } from "@/lib/security/crypto";
 
-export const CHUNK_SIZE = 64 * 1024; // 64 KB as recommended in specification
-const BUFFER_LOW_THRESHOLD = 256 * 1024; // 256 KB
-const BUFFER_HIGH_WATERMARK = 1024 * 1024; // 1 MB
+export const CHUNK_SIZE = 64 * 1024; // 64 KB chunks
+const BUFFER_LOW_THRESHOLD = 256 * 1024; // 256 KB low watermark
+const BUFFER_HIGH_WATERMARK = 1024 * 1024; // 1 MB high watermark
+const PREHASH_MAX_FILE_BYTES = 64 * 1024 * 1024; // Pre-hash files <= 64 MB; stream-hash larger files on-the-fly
+const FLUSH_SEGMENT_CHUNKS = 256; // Compact every 256 contiguous chunks (16 MB) into a single Blob segment
 
 type ControlMessage =
   | {
@@ -41,6 +43,7 @@ type ControlMessage =
       type: "FILE_COMPLETE";
       fileId: string;
       fileIndex: number;
+      sha256?: string;
     }
   | {
       type: "FILE_VERIFIED";
@@ -63,6 +66,8 @@ interface IncomingFileBuffer {
   meta: FileMetadata;
   fileIndex: number;
   chunks: Array<Uint8Array | undefined>;
+  flushedBlobs: Blob[];
+  nextFlushChunk: number;
   receivedChunks: number;
   bytesReceived: number;
   hasher: IncrementalSHA256;
@@ -117,6 +122,36 @@ export class FileTransferEngine {
         void event.data.arrayBuffer().then((buf) => this.handleBinaryChunk(buf));
       }
     };
+
+    const handleChannelDisconnect = () => {
+      let hadActiveTransfer = false;
+      for (const prog of this.progressMap.values()) {
+        if (
+          prog.status === "transferring" ||
+          prog.status === "queued" ||
+          prog.status === "awaiting-acceptance" ||
+          prog.status === "verifying"
+        ) {
+          prog.status = "error";
+          prog.speedMBps = 0;
+          prog.estimatedSecondsRemaining = null;
+          prog.error =
+            "Connection interrupted during transfer. Reconnect to resume or retry.";
+          hadActiveTransfer = true;
+        }
+      }
+      if (hadActiveTransfer) {
+        this.emitProgress();
+        this.callbacks.onError?.(
+          "Connection interrupted during file transfer. Keep both devices on the same Wi-Fi or hotspot."
+        );
+      }
+    };
+
+    if (typeof channel.addEventListener === "function") {
+      channel.addEventListener("close", handleChannelDisconnect);
+      channel.addEventListener("error", handleChannelDisconnect);
+    }
   }
 
   public getProgressList(): FileTransferProgress[] {
@@ -135,8 +170,9 @@ export class FileTransferEngine {
   }
 
   /**
-   * Sender: Prepares the file manifest (calculating SHA-256 hashes for integrity verification)
-   * and sends it to the connected Receiver for explicit user acceptance.
+   * Sender: Prepares the file manifest and sends it to the connected Receiver for explicit user acceptance.
+   * Files <= 64 MB are hashed immediately; larger files (100 MB - 1 GB+) are hashed incrementally while streaming
+   * chunks so the manifest appears instantaneously on the Receiver without a pre-transfer delay.
    */
   public async prepareAndSendManifest(options: {
     sessionId: string;
@@ -154,8 +190,13 @@ export class FileTransferEngine {
 
     for (const item of options.files) {
       const sanitizedName = sanitizeFileName(item.name);
-      const sha256 = item.sha256 || (await computeBlobSHA256(item.file));
-      item.sha256 = sha256;
+      const shouldPreHash = item.size <= PREHASH_MAX_FILE_BYTES;
+      const sha256 =
+        item.sha256 ||
+        (shouldPreHash ? await computeBlobSHA256(item.file) : "STREAMING_SHA256");
+      if (shouldPreHash) {
+        item.sha256 = sha256;
+      }
       const totalChunks = Math.max(1, Math.ceil(item.size / CHUNK_SIZE));
 
       const meta: FileMetadata = {
@@ -270,7 +311,9 @@ export class FileTransferEngine {
       prog.status = "transferring";
       this.emitProgress();
       const buf = this.incomingBuffers.get(fileId);
-      const resumeChunk = buf ? buf.nextSequentialHashChunk : prog.chunksTransferred;
+      const resumeChunk = buf
+        ? buf.nextSequentialHashChunk
+        : prog.chunksTransferred;
       this.sendControl({
         type: "FILE_CONTROL",
         fileId,
@@ -294,6 +337,18 @@ export class FileTransferEngine {
       prog.chunksTransferred = 0;
       prog.percentage = 0;
       prog.error = undefined;
+
+      const existingBuf = this.incomingBuffers.get(fileId);
+      if (existingBuf) {
+        existingBuf.chunks = new Array(existingBuf.meta.totalChunks);
+        existingBuf.flushedBlobs = [];
+        existingBuf.nextFlushChunk = 0;
+        existingBuf.receivedChunks = 0;
+        existingBuf.bytesReceived = 0;
+        existingBuf.hasher = new IncrementalSHA256();
+        existingBuf.nextSequentialHashChunk = 0;
+      }
+
       this.emitProgress();
       this.sendControl({
         type: "FILE_CONTROL",
@@ -316,16 +371,19 @@ export class FileTransferEngine {
       case "MANIFEST": {
         const { manifest } = msg;
         if (!manifest || !Array.isArray(manifest.files)) {
-          this.callbacks.onError?.("Received malformed file manifest from peer.");
+          this.callbacks.onError?.(
+            "Received malformed file manifest from peer."
+          );
           return;
         }
 
-        // Validate and sanitize every incoming file metadata entry
         const validatedFiles: FileMetadata[] = [];
         for (let idx = 0; idx < manifest.files.length; idx++) {
           const rawMeta = manifest.files[idx];
           if (!validateFileMetadata(rawMeta)) {
-            this.callbacks.onError?.("Rejected invalid file metadata in manifest.");
+            this.callbacks.onError?.(
+              "Rejected invalid file metadata in manifest."
+            );
             return;
           }
           const cleanMeta: FileMetadata = {
@@ -339,6 +397,8 @@ export class FileTransferEngine {
             meta: cleanMeta,
             fileIndex: idx,
             chunks: new Array(cleanMeta.totalChunks),
+            flushedBlobs: [],
+            nextFlushChunk: 0,
             receivedChunks: 0,
             bytesReceived: 0,
             hasher: new IncrementalSHA256(),
@@ -408,7 +468,7 @@ export class FileTransferEngine {
       }
 
       case "FILE_COMPLETE": {
-        void this.finalizeIncomingFile(msg.fileId);
+        void this.finalizeIncomingFile(msg.fileId, msg.sha256);
         break;
       }
 
@@ -455,7 +515,9 @@ export class FileTransferEngine {
           prog.status = "queued";
           this.emitProgress();
           if (this.selectedFiles.length > 0 && !this.isSendingLoopActive) {
-            void this.startSendingFiles({ [msg.fileId]: msg.resumeChunk || 0 });
+            void this.startSendingFiles({
+              [msg.fileId]: msg.resumeChunk || 0,
+            });
           }
         }
         break;
@@ -527,19 +589,27 @@ export class FileTransferEngine {
   }
 
   /**
-   * Sender: Streams each file in 64 KB chunks via Blob.slice() with backpressure management.
+   * Sender: Streams each file in 64 KB chunks via Blob.slice() with backpressure management
+   * and incremental SHA-256 computation for large files.
    */
-  private async startSendingFiles(resumeOffsets: Record<string, number>): Promise<void> {
+  private async startSendingFiles(
+    resumeOffsets: Record<string, number>
+  ): Promise<void> {
     if (this.isSendingLoopActive || !this.manifest || !this.channel) return;
     this.isSendingLoopActive = true;
 
     try {
-      for (let fileIndex = 0; fileIndex < this.manifest.files.length; fileIndex++) {
+      for (
+        let fileIndex = 0;
+        fileIndex < this.manifest.files.length;
+        fileIndex++
+      ) {
         const meta = this.manifest.files[fileIndex];
         const selected = this.selectedFiles.find((f) => f.id === meta.id);
         const prog = this.progressMap.get(meta.id);
         if (!selected || !prog) continue;
-        if (this.cancelledFiles.has(meta.id) || prog.status === "completed") continue;
+        if (this.cancelledFiles.has(meta.id) || prog.status === "completed")
+          continue;
 
         const startChunk = Math.max(0, resumeOffsets[meta.id] || 0);
         prog.status = "transferring";
@@ -565,14 +635,26 @@ export class FileTransferEngine {
             type: "FILE_COMPLETE",
             fileId: meta.id,
             fileIndex,
+            sha256: meta.sha256,
           });
           continue;
         }
 
+        const needsStreamingHash =
+          !selected.sha256 || meta.sha256 === "STREAMING_SHA256";
+        const senderHasher =
+          needsStreamingHash && startChunk === 0
+            ? new IncrementalSHA256()
+            : null;
+
         let lastUiUpdateTime = performance.now();
         let bytesSinceLastUiUpdate = 0;
 
-        for (let chunkIndex = startChunk; chunkIndex < meta.totalChunks; chunkIndex++) {
+        for (
+          let chunkIndex = startChunk;
+          chunkIndex < meta.totalChunks;
+          chunkIndex++
+        ) {
           if (this.cancelledFiles.has(meta.id)) {
             break;
           }
@@ -587,7 +669,9 @@ export class FileTransferEngine {
             prog.status = "error";
             prog.error = "Connection lost during file transfer.";
             this.emitProgress();
-            this.callbacks.onError?.("WebRTC DataChannel closed during transfer.");
+            this.callbacks.onError?.(
+              "WebRTC DataChannel closed during transfer."
+            );
             return;
           }
 
@@ -598,6 +682,10 @@ export class FileTransferEngine {
           const sliceBlob = selected.file.slice(startByte, endByte);
           const chunkBuffer = await sliceBlob.arrayBuffer();
           const chunkBytes = new Uint8Array(chunkBuffer);
+
+          if (senderHasher) {
+            senderHasher.update(chunkBytes);
+          }
 
           // Construct 8-byte binary header: [fileIndex (Uint32 BE), chunkIndex (Uint32 BE)] + chunkBytes
           const packet = new Uint8Array(8 + chunkBytes.byteLength);
@@ -610,17 +698,24 @@ export class FileTransferEngine {
 
           prog.chunksTransferred = chunkIndex + 1;
           prog.bytesTransferred = endByte;
-          prog.percentage = Math.min(100, Math.round((endByte / meta.size) * 100));
+          prog.percentage = Math.min(
+            100,
+            Math.round((endByte / meta.size) * 100)
+          );
           bytesSinceLastUiUpdate += chunkBytes.byteLength;
 
           const now = performance.now();
           const elapsedMs = now - lastUiUpdateTime;
           if (elapsedMs >= 120 || chunkIndex === meta.totalChunks - 1) {
             const instantMBps =
-              elapsedMs > 0 ? bytesSinceLastUiUpdate / (1024 * 1024) / (elapsedMs / 1000) : 0;
+              elapsedMs > 0
+                ? bytesSinceLastUiUpdate / (1024 * 1024) / (elapsedMs / 1000)
+                : 0;
             prog.speedMBps =
               prog.speedMBps > 0
-                ? Number((prog.speedMBps * 0.65 + instantMBps * 0.35).toFixed(2))
+                ? Number(
+                    (prog.speedMBps * 0.65 + instantMBps * 0.35).toFixed(2)
+                  )
                 : Number(instantMBps.toFixed(2));
             const remainingBytes = meta.size - endByte;
             prog.estimatedSecondsRemaining =
@@ -635,6 +730,18 @@ export class FileTransferEngine {
         }
 
         if (!this.cancelledFiles.has(meta.id)) {
+          let finalSha256 = selected.sha256 || meta.sha256;
+          if (senderHasher) {
+            finalSha256 = senderHasher.digestHex();
+            selected.sha256 = finalSha256;
+            meta.sha256 = finalSha256;
+          } else if (finalSha256 === "STREAMING_SHA256") {
+            finalSha256 = await computeBlobSHA256(selected.file);
+            selected.sha256 = finalSha256;
+            meta.sha256 = finalSha256;
+          }
+
+          prog.sha256Expected = finalSha256;
           prog.status = "verifying";
           prog.percentage = 100;
           prog.estimatedSecondsRemaining = 0;
@@ -644,6 +751,7 @@ export class FileTransferEngine {
             type: "FILE_COMPLETE",
             fileId: meta.id,
             fileIndex,
+            sha256: finalSha256,
           });
         }
       }
@@ -655,10 +763,39 @@ export class FileTransferEngine {
         });
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : "File transfer failed.";
+      const message =
+        err instanceof Error ? err.message : "File transfer failed.";
       this.callbacks.onError?.(message);
     } finally {
       this.isSendingLoopActive = false;
+    }
+  }
+
+  /**
+   * Receiver: Flushes contiguous hashed chunks into 16 MB Blob segments so large transfers (500 MB - 1 GB)
+   * do not hold tens of thousands of individual Uint8Array slices in memory.
+   */
+  private flushContiguousSegments(incoming: IncomingFileBuffer): void {
+    while (
+      incoming.nextSequentialHashChunk - incoming.nextFlushChunk >=
+      FLUSH_SEGMENT_CHUNKS
+    ) {
+      const segmentEnd = incoming.nextFlushChunk + FLUSH_SEGMENT_CHUNKS;
+      const parts: BlobPart[] = [];
+      for (let i = incoming.nextFlushChunk; i < segmentEnd; i++) {
+        const chunk = incoming.chunks[i];
+        if (chunk) {
+          parts.push(
+            chunk.buffer.slice(
+              chunk.byteOffset,
+              chunk.byteOffset + chunk.byteLength
+            ) as ArrayBuffer
+          );
+          incoming.chunks[i] = undefined;
+        }
+      }
+      incoming.flushedBlobs.push(new Blob(parts));
+      incoming.nextFlushChunk = segmentEnd;
     }
   }
 
@@ -681,9 +818,11 @@ export class FileTransferEngine {
 
     if (chunkIndex >= incoming.meta.totalChunks) return;
 
-    // Avoid double-counting if a chunk was retransmitted
-    if (!incoming.chunks[chunkIndex]) {
-      // Copy slice so underlying buffer can be GC'd cleanly
+    // Avoid double-counting if a chunk was already received or flushed
+    if (
+      chunkIndex >= incoming.nextFlushChunk &&
+      !incoming.chunks[chunkIndex]
+    ) {
       const copy = new Uint8Array(payload.byteLength);
       copy.set(payload);
       incoming.chunks[chunkIndex] = copy;
@@ -695,9 +834,14 @@ export class FileTransferEngine {
         incoming.nextSequentialHashChunk < incoming.meta.totalChunks &&
         incoming.chunks[incoming.nextSequentialHashChunk] !== undefined
       ) {
-        incoming.hasher.update(incoming.chunks[incoming.nextSequentialHashChunk]!);
+        incoming.hasher.update(
+          incoming.chunks[incoming.nextSequentialHashChunk]!
+        );
         incoming.nextSequentialHashChunk += 1;
       }
+
+      // Periodically compact hashed chunks into 16 MB Blob segments to keep JS heap flat
+      this.flushContiguousSegments(incoming);
     }
 
     prog.status = "transferring";
@@ -705,7 +849,10 @@ export class FileTransferEngine {
     prog.bytesTransferred = incoming.bytesReceived;
     prog.percentage =
       incoming.meta.size > 0
-        ? Math.min(100, Math.round((incoming.bytesReceived / incoming.meta.size) * 100))
+        ? Math.min(
+            100,
+            Math.round((incoming.bytesReceived / incoming.meta.size) * 100)
+          )
         : 100;
 
     const now = Date.now();
@@ -715,12 +862,16 @@ export class FileTransferEngine {
       const instantMBps = dt > 0 ? dBytes / (1024 * 1024) / (dt / 1000) : 0;
       incoming.currentSpeedMBps =
         incoming.currentSpeedMBps > 0
-          ? Number((incoming.currentSpeedMBps * 0.65 + instantMBps * 0.35).toFixed(2))
+          ? Number(
+              (incoming.currentSpeedMBps * 0.65 + instantMBps * 0.35).toFixed(2)
+            )
           : Number(instantMBps.toFixed(2));
       prog.speedMBps = incoming.currentSpeedMBps;
       const remBytes = Math.max(0, incoming.meta.size - incoming.bytesReceived);
       prog.estimatedSecondsRemaining =
-        prog.speedMBps > 0 ? Math.ceil(remBytes / (prog.speedMBps * 1024 * 1024)) : null;
+        prog.speedMBps > 0
+          ? Math.ceil(remBytes / (prog.speedMBps * 1024 * 1024))
+          : null;
 
       incoming.lastTickTime = now;
       incoming.lastTickBytes = incoming.bytesReceived;
@@ -732,10 +883,18 @@ export class FileTransferEngine {
    * Receiver: Reconstructs the Blob, verifies SHA-256 integrity, generates download URL,
    * and sends verification acknowledgment back to the Sender.
    */
-  private async finalizeIncomingFile(fileId: string): Promise<void> {
+  private async finalizeIncomingFile(
+    fileId: string,
+    streamedSha256?: string
+  ): Promise<void> {
     const incoming = this.incomingBuffers.get(fileId);
     const prog = this.progressMap.get(fileId);
     if (!incoming || !prog) return;
+
+    if (streamedSha256 && streamedSha256.length >= 8) {
+      incoming.meta.sha256 = streamedSha256;
+      prog.sha256Expected = streamedSha256;
+    }
 
     prog.status = "verifying";
     this.emitProgress();
@@ -746,15 +905,26 @@ export class FileTransferEngine {
         incoming.nextSequentialHashChunk < incoming.meta.totalChunks &&
         incoming.chunks[incoming.nextSequentialHashChunk] !== undefined
       ) {
-        incoming.hasher.update(incoming.chunks[incoming.nextSequentialHashChunk]!);
+        incoming.hasher.update(
+          incoming.chunks[incoming.nextSequentialHashChunk]!
+        );
         incoming.nextSequentialHashChunk += 1;
       }
 
-      const orderedParts: BlobPart[] = [];
-      for (let i = 0; i < incoming.meta.totalChunks; i++) {
+      const orderedParts: BlobPart[] = [...incoming.flushedBlobs];
+      for (
+        let i = incoming.nextFlushChunk;
+        i < incoming.meta.totalChunks;
+        i++
+      ) {
         const chunk = incoming.chunks[i];
         if (chunk) {
-          orderedParts.push(chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength) as ArrayBuffer);
+          orderedParts.push(
+            chunk.buffer.slice(
+              chunk.byteOffset,
+              chunk.byteOffset + chunk.byteLength
+            ) as ArrayBuffer
+          );
         }
       }
 
@@ -768,6 +938,7 @@ export class FileTransferEngine {
           : incoming.hasher.digestHex();
 
       const verified =
+        reconstructedBlob.size === incoming.meta.size &&
         sha256Actual.toLowerCase() === incoming.meta.sha256.toLowerCase();
 
       const downloadUrl = URL.createObjectURL(reconstructedBlob);
@@ -783,11 +954,13 @@ export class FileTransferEngine {
       prog.completedAt = Date.now();
       prog.status = verified ? "completed" : "verification-failed";
       if (!verified) {
-        prog.error = "SHA-256 verification failed! The received file may be corrupted.";
+        prog.error =
+          "SHA-256 verification failed! The received file may be incomplete or corrupted.";
       }
 
-      // Free memory of raw chunk array now that the Blob is constructed
+      // Free memory of raw chunk array and intermediate blob list now that final Blob is constructed
       incoming.chunks = [];
+      incoming.flushedBlobs = [];
 
       this.emitProgress();
 
@@ -802,7 +975,9 @@ export class FileTransferEngine {
     } catch (err) {
       prog.status = "error";
       prog.error =
-        err instanceof Error ? err.message : "Failed to reconstruct or verify file.";
+        err instanceof Error
+          ? err.message
+          : "Failed to reconstruct or verify file.";
       this.emitProgress();
     }
   }
@@ -836,4 +1011,3 @@ export class FileTransferEngine {
     this.objectUrls = [];
   }
 }
-
